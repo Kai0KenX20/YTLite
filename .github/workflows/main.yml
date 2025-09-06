@@ -70,7 +70,7 @@ concurrency:
 
 jobs:
   build:
-    name: 
+    name:
     runs-on: macos-latest
     permissions:
       contents: write
@@ -90,9 +90,7 @@ jobs:
       - name: Download and validate IPA
         run: |
           wget "${{ inputs.ipa_url }}" --no-verbose -O ${{ github.workspace }}/youtube.ipa
-
           file_type=$(file --mime-type -b ${{ github.workspace }}/youtube.ipa)
-
           if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
             echo "::error::Validation failed: The downloaded file is not a valid IPA. Detected type: $file_type."
             exit 1
@@ -298,23 +296,69 @@ jobs:
       - name: Inject tweaks into IPA
         run: |
           tweaks="ytplus.deb OpenYoutubeSafariExtension.appex"
-
           for f in *.deb; do
             if [ -f "$f" ]; then
               tweaks="$tweaks $f"
             fi
           done
-
           cyan -i youtube.ipa -o YouTubePlus_${{ inputs.tweak_version }}.ipa -uwef $tweaks -n "${{ inputs.display_name }}" -b ${{ inputs.bundle_id }}
 
+      # === NEW: Create checksums and release metadata ===
+      - name: Generate checksums
+        run: |
+          shopt -s nullglob
+          files=(YouTubePlus_${{ inputs.tweak_version }}.ipa *.deb)
+          shasum -a 256 "${files[@]}" > checksums.txt
+          echo "Created checksums.txt:"
+          cat checksums.txt
+
+      - name: Compose release notes
+        id: meta
+        run: |
+          INTEGRATIONS=()
+          [[ "${{ inputs.enable_youpip }}" == "true" ]] && INTEGRATIONS+=("YouPiP")
+          [[ "${{ inputs.enable_ytuhd }}" == "true" ]] && INTEGRATIONS+=("YTUHD")
+          [[ "${{ inputs.enable_yq }}" == "true" ]] && INTEGRATIONS+=("YouQuality")
+          [[ "${{ inputs.enable_ryd }}" == "true" ]] && INTEGRATIONS+=("Return YouTube Dislikes")
+          [[ "${{ inputs.enable_demc }}" == "true" ]] && INTEGRATIONS+=("DontEatMyContent")
+
+          if (( ${#INTEGRATIONS[@]} == 0 )); then
+            INTEGRATION_STR="(none)"
+          else
+            INTEGRATION_STR="$(IFS=', '; echo "${INTEGRATIONS[*]}")"
+          fi
+
+          echo "integration_str=$INTEGRATION_STR" >> $GITHUB_OUTPUT
+          echo "tag=ytp-v${{ inputs.tweak_version }}-r${{ github.run_number }}" >> $GITHUB_OUTPUT
+          echo "name=YouTubePlus v${{ inputs.tweak_version }} (build ${{ github.run_number }})" >> $GITHUB_OUTPUT
+
+      # === UPDATED: Publish a Release with all built files ===
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2.0.1
         with:
-          tag_name: ytp-${{ github.run_number }}
-          name: YouTubePlus v${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubePlus_${{ inputs.tweak_version }}.ipa
-          draft: true
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          draft: false
+          prerelease: false
+          files: |
+            YouTubePlus_${{ inputs.tweak_version }}.ipa
+            *.deb
+            checksums.txt
+          body: |
+            **YouTubePlus build**
+            - Tweak version: `${{ inputs.tweak_version }}`
+            - Display name: `${{ inputs.display_name }}`
+            - Bundle ID: `${{ inputs.bundle_id }}`
+            - Enabled integrations: ${{ steps.meta.outputs.integration_str }}
+
+            **Artifacts**
+            - Final IPA: `YouTubePlus_${{ inputs.tweak_version }}.ipa`
+            - Included DEBs: `*.deb`
+            - SHA-256: `checksums.txt`
+
+            **Note**
+            - Triggered via workflow_dispatch. More details: ${{ inputs.info_note }}
 
       - name: Output Release URL
         run: |
-          echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases/tag/${{ steps.meta.outputs.tag }}"
